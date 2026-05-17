@@ -1,0 +1,12 @@
+{
+  "name": "signageops-ai",
+  "private": true,
+  "scripts": {
+    "dev": "pnpm --filter web dev",
+    "build": "pnpm --filter web build",
+    "type-check": "pnpm --filter web exec tsc --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "^5"
+  }
+}
