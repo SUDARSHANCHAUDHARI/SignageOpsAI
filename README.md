@@ -41,11 +41,18 @@ OPENAI_API_KEY=...        # required if AI_PROVIDER=openai
 - pnpm workspaces
 - Anthropic SDK / OpenAI SDK
 
-## Deployment
+## Production Checks
+
+Run the production checks before deploying:
 
 ```bash
 pnpm type-check    # TypeScript verification
 pnpm build        # production build
+```
+
+## Deployment
+
+```bash
 vercel --prod     # deploy to Vercel
 ```
 
