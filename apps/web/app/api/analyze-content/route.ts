@@ -9,6 +9,8 @@ const SYSTEM_PROMPT = `You are a digital signage content QA expert. Review the p
 Focus on: readability, file size, aspect ratio suitability for common signage displays (16:9, 9:16, 4:3).
 Respond with valid JSON only.`
 
+const MAX_FILE_BYTES = 10 * 1024 * 1024
+const ACCEPTED_CONTENT_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp'])
 const SIGNAGE_ASPECTS = ['16:9', '9:16', '4:3', '3:4', '1:1']
 
 function gcd(a: number, b: number): number {
@@ -24,6 +26,12 @@ export async function POST(req: NextRequest) {
   const formData = await req.formData()
   const file = formData.get('file') as File | null
   if (!file) return NextResponse.json({ error: 'file required' }, { status: 400 })
+  if (!ACCEPTED_CONTENT_TYPES.has(file.type)) {
+    return NextResponse.json({ error: 'file must be PNG, JPEG, or WebP' }, { status: 400 })
+  }
+  if (file.size > MAX_FILE_BYTES) {
+    return NextResponse.json({ error: 'file must be 10MB or smaller' }, { status: 413 })
+  }
 
   const sizeMb = Math.round((file.size / 1024 / 1024) * 100) / 100
   const issues: string[] = []
@@ -35,31 +43,29 @@ export async function POST(req: NextRequest) {
   let height: number | undefined
   let aspectRatio: string | undefined
 
-  if (file.type.startsWith('image/')) {
-    try {
-      const buf = Buffer.from(await file.arrayBuffer())
-      if (file.type === 'image/jpeg' || file.type === 'image/jpg') {
-        const sof = buf.indexOf(Buffer.from([0xff, 0xc0]))
-        if (sof !== -1) {
-          height = buf.readUInt16BE(sof + 5)
-          width = buf.readUInt16BE(sof + 7)
-        }
-      } else if (file.type === 'image/png') {
-        width = buf.readUInt32BE(16)
-        height = buf.readUInt32BE(20)
+  try {
+    const buf = Buffer.from(await file.arrayBuffer())
+    if (file.type === 'image/jpeg') {
+      const sof = buf.indexOf(Buffer.from([0xff, 0xc0]))
+      if (sof !== -1) {
+        height = buf.readUInt16BE(sof + 5)
+        width = buf.readUInt16BE(sof + 7)
       }
-      if (width && height) {
-        aspectRatio = getAspectRatio(width, height)
-        if (!SIGNAGE_ASPECTS.includes(aspectRatio)) {
-          issues.push(`Aspect ratio ${aspectRatio} is unusual for standard signage displays`)
-        }
-        if (width < 1280 || height < 720) {
-          issues.push(`Resolution ${width}x${height} is below recommended 1280x720 minimum`)
-        }
-      }
-    } catch {
-      // skip dimension parsing
+    } else if (file.type === 'image/png') {
+      width = buf.readUInt32BE(16)
+      height = buf.readUInt32BE(20)
     }
+    if (width && height) {
+      aspectRatio = getAspectRatio(width, height)
+      if (!SIGNAGE_ASPECTS.includes(aspectRatio)) {
+        issues.push(`Aspect ratio ${aspectRatio} is unusual for standard signage displays`)
+      }
+      if (width < 1280 || height < 720) {
+        issues.push(`Resolution ${width}x${height} is below recommended 1280x720 minimum`)
+      }
+    }
+  } catch {
+    // skip dimension parsing
   }
 
   let aiReview = 'Content reviewed. Ensure it meets your display specifications.'

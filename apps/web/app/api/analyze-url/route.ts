@@ -9,6 +9,18 @@ const SYSTEM_PROMPT = `You are a digital signage embed diagnostic expert. Given 
 - technicalSummary: string (1-2 sentences, for internal use)
 Respond with valid JSON only.`
 
+function parsePublicHttpUrl(value: string): URL | null {
+  try {
+    const url = new URL(value)
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return null
+    const host = url.hostname.toLowerCase()
+    if (host === 'localhost' || host === '127.0.0.1' || host === '::1' || host.endsWith('.local')) return null
+    return url
+  } catch {
+    return null
+  }
+}
+
 function parseHeaders(headers: Record<string, string>): HeaderIssue[] {
   const issues: HeaderIssue[] = []
   const csp = headers['content-security-policy'] ?? ''
@@ -44,13 +56,16 @@ function parseHeaders(headers: Record<string, string>): HeaderIssue[] {
 
 export async function POST(req: NextRequest) {
   const { url } = (await req.json()) as { url: string }
-  if (!url) return NextResponse.json({ error: 'url required' }, { status: 400 })
+  const parsedUrl = parsePublicHttpUrl(url)
+  if (!parsedUrl) {
+    return NextResponse.json({ error: 'a public http(s) url is required' }, { status: 400 })
+  }
 
   let status: number | null = null
   let headers: Record<string, string> = {}
 
   try {
-    const res = await fetch(url, { method: 'HEAD', redirect: 'follow', signal: AbortSignal.timeout(8000) })
+    const res = await fetch(parsedUrl.toString(), { method: 'HEAD', redirect: 'follow', signal: AbortSignal.timeout(8000) })
     status = res.status
     res.headers.forEach((v, k) => { headers[k.toLowerCase()] = v })
   } catch {
@@ -60,7 +75,7 @@ export async function POST(req: NextRequest) {
   const staticIssues = parseHeaders(headers)
   const iframeAllowed = staticIssues.every((i) => i.severity !== 'fail')
 
-  const aiInput = JSON.stringify({ url, status, headers, staticIssues })
+  const aiInput = JSON.stringify({ url: parsedUrl.toString(), status, headers, staticIssues })
   let customerReply = ''
   let technicalSummary = ''
 
@@ -77,7 +92,7 @@ export async function POST(req: NextRequest) {
   }
 
   const result: UrlCheckResult = {
-    url,
+    url: parsedUrl.toString(),
     status,
     iframeAllowed,
     issues: staticIssues,
