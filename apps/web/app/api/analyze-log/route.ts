@@ -12,9 +12,18 @@ const SYSTEM_PROMPT = `You are an expert digital signage QA and support engineer
 - affectedSystem: string (e.g. "Network", "Browser/Player", "Content Loading", "Device")
 Respond with valid JSON only.`
 
+const MAX_LOG_CHARS = 200_000
+const MAX_TITLE_CHARS = 120
+
 export async function POST(req: NextRequest) {
   const { logs, title } = (await req.json()) as { logs: string; title?: string }
   if (!logs?.trim()) return NextResponse.json({ error: 'logs required' }, { status: 400 })
+  if (logs.length > MAX_LOG_CHARS) {
+    return NextResponse.json({ error: `logs must be ${MAX_LOG_CHARS} characters or fewer` }, { status: 413 })
+  }
+  if (title && title.length > MAX_TITLE_CHARS) {
+    return NextResponse.json({ error: `title must be ${MAX_TITLE_CHARS} characters or fewer` }, { status: 400 })
+  }
 
   const events = parseLogs(logs)
   const severity = deriveSeverity(events)

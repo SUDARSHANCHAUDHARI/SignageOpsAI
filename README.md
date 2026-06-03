@@ -41,14 +41,27 @@ OPENAI_API_KEY=...        # required if AI_PROVIDER=openai
 - pnpm workspaces
 - Anthropic SDK / OpenAI SDK
 
+## Production Checks
+
+Run the production checks before deploying:
+
+```bash
+pnpm type-check    # TypeScript verification
+pnpm build        # production build
+```
+
 ## Deployment
 
 ```bash
-pnpm build        # production build
 vercel --prod     # deploy to Vercel
 ```
 
 Set `AI_PROVIDER` and your API key in your Vercel project environment variables.
+
+## Release Notes
+
+- Do not commit `.env`, `.env.local`, or report exports with customer data.
+- Keep API keys only in the deployment provider environment.
 
 ## License
 
