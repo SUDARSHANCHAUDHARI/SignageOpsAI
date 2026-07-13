@@ -88,3 +88,5 @@ graphify-out/
 
 # Turbo
 .turbo/
+
+repoguard-results/
