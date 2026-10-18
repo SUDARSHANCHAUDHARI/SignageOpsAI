@@ -1,3 +1,7 @@
+import { lookup } from 'node:dns/promises'
+import { request as httpRequest } from 'node:http'
+import { request as httpsRequest } from 'node:https'
+import type { LookupFunction } from 'node:net'
 import { NextRequest, NextResponse } from 'next/server'
 import { chat } from '@/lib/ai'
 import type { UrlCheckResult, HeaderIssue } from '@/lib/types'
@@ -9,15 +13,85 @@ const SYSTEM_PROMPT = `You are a digital signage embed diagnostic expert. Given 
 - technicalSummary: string (1-2 sentences, for internal use)
 Respond with valid JSON only.`
 
+const MAX_REDIRECTS = 5
+
+function isPrivateIp(ip: string): boolean {
+  const v4 = ip.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/)
+  if (v4) {
+    const a = Number(v4[1])
+    const b = Number(v4[2])
+    return a === 0 || a === 10 || a === 127 || a >= 224 ||
+      (a === 169 && b === 254) ||
+      (a === 172 && b >= 16 && b <= 31) ||
+      (a === 192 && b === 168) ||
+      (a === 100 && b >= 64 && b <= 127)
+  }
+  if (!ip.includes(':')) return false
+  const v6 = ip.toLowerCase()
+  if (v6 === '::' || v6 === '::1' || /^f[cd]/.test(v6) || /^fe[89ab]/.test(v6)) return true
+  // IPv4-mapped: ::ffff:1.2.3.4 (dns) or ::ffff:102:304 (URL-normalized)
+  const mapped = v6.match(/^::ffff:(.+)$/)
+  if (!mapped) return false
+  const hex = mapped[1].match(/^([0-9a-f]{1,4}):([0-9a-f]{1,4})$/)
+  if (!hex) return isPrivateIp(mapped[1])
+  const hi = parseInt(hex[1], 16)
+  const lo = parseInt(hex[2], 16)
+  return isPrivateIp(`${hi >> 8}.${hi & 255}.${lo >> 8}.${lo & 255}`)
+}
+
 function parsePublicHttpUrl(value: string): URL | null {
   try {
     const url = new URL(value)
     if (url.protocol !== 'http:' && url.protocol !== 'https:') return null
-    const host = url.hostname.toLowerCase()
-    if (host === 'localhost' || host === '127.0.0.1' || host === '::1' || host.endsWith('.local')) return null
+    const host = url.hostname.toLowerCase().replace(/\.$/, '').replace(/^\[|\]$/g, '')
+    if (host === 'localhost' || /\.(localhost|local|internal)$/.test(host) || isPrivateIp(host)) return null
     return url
   } catch {
     return null
+  }
+}
+
+// Resolves once and refuses if ANY address is private; the socket connects to the
+// vetted address, so a second (rebinding) answer is never used. Host/SNI stay the name.
+const pinnedLookup: LookupFunction = (hostname, options, callback) => {
+  lookup(hostname, { all: true })
+    .then((addresses) => {
+      if (!addresses.length || addresses.some((a) => isPrivateIp(a.address))) throw new Error('blocked host')
+      if (options.all) callback(null, addresses)
+      else callback(null, addresses[0].address, addresses[0].family)
+    })
+    .catch((err) => callback(err, ''))
+}
+
+function headPinned(url: URL): Promise<Response> {
+  return new Promise((resolve, reject) => {
+    const send = url.protocol === 'https:' ? httpsRequest : httpRequest
+    const req = send(url, { method: 'HEAD', lookup: pinnedLookup, signal: AbortSignal.timeout(8000) }, (res) => {
+      res.resume()
+      try {
+        const headers = new Headers()
+        for (let i = 0; i < res.rawHeaders.length; i += 2) headers.append(res.rawHeaders[i], res.rawHeaders[i + 1])
+        resolve(new Response(null, { status: res.statusCode ?? 0, headers }))
+      } catch (err) {
+        reject(err)
+      }
+    })
+    req.on('error', reject)
+    req.end()
+  })
+}
+
+// Follows redirects by hand so every hop is re-validated.
+async function fetchPublicHead(start: URL): Promise<Response> {
+  let current = start
+  for (let hop = 0; ; hop++) {
+    const res = await headPinned(current)
+    const location = res.headers.get('location')
+    if (res.status < 300 || res.status >= 400 || !location) return res
+    if (hop >= MAX_REDIRECTS) throw new Error('too many redirects')
+    const next = parsePublicHttpUrl(new URL(location, current).toString())
+    if (!next) throw new Error('blocked redirect')
+    current = next
   }
 }
 
@@ -65,7 +139,7 @@ export async function POST(req: NextRequest) {
   let headers: Record<string, string> = {}
 
   try {
-    const res = await fetch(parsedUrl.toString(), { method: 'HEAD', redirect: 'follow', signal: AbortSignal.timeout(8000) })
+    const res = await fetchPublicHead(parsedUrl)
     status = res.status
     res.headers.forEach((v, k) => { headers[k.toLowerCase()] = v })
   } catch {
